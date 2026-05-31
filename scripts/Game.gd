@@ -201,8 +201,10 @@ func _predict_ball_y(target_x: float) -> float:
 	if signf(target_x - ball.position.x) != signf(ball_dir.x):
 		return H / 2.0
 
-	var dx    := absf(target_x - ball.position.x)
-	var dy    := (ball_dir.y / ball_dir.x) * dx   # total signed Y displacement
+	# Signed displacement — gives a constant result wherever along the flight
+	# path this is called.  absf() would break the left-paddle case because
+	# (target_x − ball.x) is negative there, and absf flips the sign of dy.
+	var dy := (ball_dir.y / ball_dir.x) * (target_x - ball.position.x)
 
 	# Fold into [WALL_TOP, WALL_BOT] using repeated reflection
 	var y := ball.position.y + dy - WALL_TOP      # 0-based
