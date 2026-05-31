@@ -25,12 +25,13 @@ var ball_speed     := BALL_SPEED_START
 var time_since_hit := 1.0   # starts high so the very first hit always counts
 
 # ── Node refs ─────────────────────────────────────────────────────────────────
-var ball         : CharacterBody2D
-var left_paddle  : StaticBody2D
-var right_paddle : StaticBody2D
-var lbl_left     : Label
-var lbl_right    : Label
-var lbl_message  : Label
+var ball             : CharacterBody2D
+var left_paddle      : StaticBody2D
+var right_paddle     : StaticBody2D
+var lbl_left         : Label
+var lbl_right        : Label
+var lbl_message      : Label
+var prediction_marker : Polygon2D   # debug: shows where the AI predicts the ball will land
 
 # ─────────────────────────────────────────────────────────────────────────────
 func _ready() -> void:
@@ -75,6 +76,15 @@ func _build_scene() -> void:
 	ui.add_child(lbl_left)
 	ui.add_child(lbl_right)
 	ui.add_child(lbl_message)
+
+	# Debug prediction marker — a small cyan diamond drawn in world space
+	prediction_marker = Polygon2D.new()
+	prediction_marker.polygon = PackedVector2Array([
+		Vector2(0, -8), Vector2(8, 0), Vector2(0, 8), Vector2(-8, 0)
+	])
+	prediction_marker.color   = Color(0.0, 1.0, 1.0, 0.85)   # bright cyan
+	prediction_marker.visible = false
+	add_child(prediction_marker)
 
 	_show_title()
 
@@ -163,25 +173,24 @@ func _tick_ai(paddle: StaticBody2D, opponent: StaticBody2D, ball_toward_positive
 	var approaching := ball_dir.x > 0.0 if ball_toward_positive_x else ball_dir.x < 0.0
 
 	var target_y: float
-	if approaching:
-		# Predict where the ball will actually land at our paddle x
-		var landing_y := _predict_ball_y(paddle.position.x)
+	var landing_y: float
 
-		# Strategic offset: hit the ball with the part of the paddle that deflects
-		# it AWAY from where the opponent currently is.
-		# opponent above centre → send ball down → hit ball below centre (hit_pos = +1)
-		#   → our paddle must be ABOVE landing_y → target = landing_y - offset
-		# opponent below centre → send ball up   → hit ball above centre (hit_pos = -1)
-		#   → our paddle must be BELOW landing_y → target = landing_y + offset
-		var opp_bias  := (opponent.position.y - H / 2.0) / (H / 2.0)  # -1 … +1
-		target_y = landing_y - opp_bias * 36.0   # 36 ≈ 90 % of half-paddle (40)
+	if approaching:
+		landing_y = _predict_ball_y(paddle.position.x)
+		var opp_bias := (opponent.position.y - H / 2.0) / (H / 2.0)  # -1 … +1
+		target_y     = landing_y - opp_bias * 36.0
 	else:
-		# Ball moving away — drift back to centre so we're not caught out of position
-		target_y = H / 2.0
+		landing_y = H / 2.0
+		target_y  = H / 2.0
 
 	target_y = clampf(target_y, 50.0, H - 50.0)
 	var move  := clampf(target_y - paddle.position.y, -PADDLE_SPEED * delta, PADDLE_SPEED * delta)
 	paddle.position.y = clamp(paddle.position.y + move, 50.0, H - 50.0)
+
+	# ── Debug marker: show raw landing prediction (before strategic offset) ──
+	prediction_marker.visible    = true
+	prediction_marker.position.x = paddle.position.x
+	prediction_marker.position.y = landing_y
 
 # Predict the ball's Y coordinate when it reaches target_x, accounting for
 # wall bounces. Returns H/2 if the ball is moving away from target_x.
@@ -255,8 +264,9 @@ func _show_title() -> void:
 	lbl_message.text = "PONG\n\nPress 1 — vs Computer  (you play LEFT,  W / S)\nPress 2 — vs Computer  (you play RIGHT,  ↑ / ↓)\nPress 3 — 2 Players"
 
 func _start_game() -> void:
-	left_score  = 0
-	right_score = 0
+	left_score               = 0
+	right_score              = 0
+	prediction_marker.visible = false
 	_update_scores()
 	lbl_message.text = ""
 	game_active      = true
@@ -288,7 +298,8 @@ func _update_scores() -> void:
 	lbl_right.text = str(right_score)
 
 func _end_game() -> void:
-	game_active  = false
-	ball.visible = false
+	game_active               = false
+	ball.visible              = false
+	prediction_marker.visible = false
 	var winner := "Left" if left_score >= WINNING_SCORE else "Right"
 	lbl_message.text = winner + " wins!\n\nPress 1 — vs Computer  (you LEFT)\nPress 2 — vs Computer  (you RIGHT)\nPress 3 — 2 Players"
