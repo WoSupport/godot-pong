@@ -15,7 +15,8 @@ const H                     := 600.0
 var left_score  := 0
 var right_score := 0
 var game_active := false
-var ai_mode     := false
+var ai_left     := false   # true when the AI controls the left paddle
+var ai_right    := false   # true when the AI controls the right paddle
 var ball_dir    := Vector2.ZERO
 var ball_speed  := BALL_SPEED_START
 
@@ -125,11 +126,17 @@ func _input(event: InputEvent) -> void:
 	if game_active:
 		return
 	match event.physical_keycode:
-		KEY_1:
-			ai_mode = true
+		KEY_1:                      # vs Computer — player on LEFT  (W/S)
+			ai_left  = false
+			ai_right = true
 			_start_game()
-		KEY_2:
-			ai_mode = false
+		KEY_2:                      # vs Computer — player on RIGHT (↑/↓)
+			ai_left  = true
+			ai_right = false
+			_start_game()
+		KEY_3:                      # 2 Players
+			ai_left  = false
+			ai_right = false
 			_start_game()
 
 # ── Game loop ─────────────────────────────────────────────────────────────────
@@ -137,16 +144,19 @@ func _physics_process(delta: float) -> void:
 	if not game_active:
 		return
 
-	# Left paddle — always human (W / S)
-	var dir1 := 0
-	if Input.is_key_pressed(KEY_W): dir1 -= 1
-	if Input.is_key_pressed(KEY_S): dir1 += 1
-	left_paddle.position.y = clamp(
-		left_paddle.position.y + dir1 * PADDLE_SPEED * delta, 50.0, H - 50.0)
+	# Left paddle
+	if ai_left:
+		_tick_ai(left_paddle, false, delta)   # AI tracks ball moving left (x < 0)
+	else:
+		var dir1 := 0
+		if Input.is_key_pressed(KEY_W): dir1 -= 1
+		if Input.is_key_pressed(KEY_S): dir1 += 1
+		left_paddle.position.y = clamp(
+			left_paddle.position.y + dir1 * PADDLE_SPEED * delta, 50.0, H - 50.0)
 
-	# Right paddle — human or AI
-	if ai_mode:
-		_tick_ai(delta)
+	# Right paddle
+	if ai_right:
+		_tick_ai(right_paddle, true, delta)   # AI tracks ball moving right (x > 0)
 	else:
 		var dir2 := 0
 		if Input.is_key_pressed(KEY_UP):   dir2 -= 1
@@ -156,14 +166,12 @@ func _physics_process(delta: float) -> void:
 
 	_tick_ball(delta)
 
-func _tick_ai(delta: float) -> void:
-	# Track ball when it's heading our way; drift to centre otherwise
-	var target_y := H / 2.0
-	if ball_dir.x > 0.0:
-		target_y = ball.position.y
-	var diff := target_y - right_paddle.position.y
-	var move := clampf(diff, -AI_SPEED * delta, AI_SPEED * delta)
-	right_paddle.position.y = clamp(right_paddle.position.y + move, 50.0, H - 50.0)
+func _tick_ai(paddle: StaticBody2D, ball_coming_when_positive_x: bool, delta: float) -> void:
+	# Track ball when it's heading toward this paddle; drift to centre otherwise
+	var ball_approaching := ball_dir.x > 0.0 if ball_coming_when_positive_x else ball_dir.x < 0.0
+	var target_y         := ball.position.y if ball_approaching else H / 2.0
+	var move             := clampf(target_y - paddle.position.y, -AI_SPEED * delta, AI_SPEED * delta)
+	paddle.position.y     = clamp(paddle.position.y + move, 50.0, H - 50.0)
 
 func _tick_ball(delta: float) -> void:
 	# Uncapped ramp-up — ball gets faster until nobody can return it
@@ -195,7 +203,7 @@ func _tick_ball(delta: float) -> void:
 
 # ── Game state ────────────────────────────────────────────────────────────────
 func _show_title() -> void:
-	lbl_message.text = "PONG\n\nPress  1  to play vs Computer\nPress  2  to play vs a Friend"
+	lbl_message.text = "PONG\n\nPress 1 — vs Computer  (you play LEFT,  W / S)\nPress 2 — vs Computer  (you play RIGHT,  ↑ / ↓)\nPress 3 — 2 Players"
 
 func _start_game() -> void:
 	left_score  = 0
@@ -233,4 +241,4 @@ func _end_game() -> void:
 	game_active  = false
 	ball.visible = false
 	var winner := "Left" if left_score >= WINNING_SCORE else "Right"
-	lbl_message.text = winner + " wins!\n\nPress  1  to play vs Computer\nPress  2  to play vs a Friend"
+	lbl_message.text = winner + " wins!\n\nPress 1 — vs Computer  (you LEFT)\nPress 2 — vs Computer  (you RIGHT)\nPress 3 — 2 Players"
