@@ -1,35 +1,38 @@
 extends Node
 
-# ── Constants ────────────────────────────────────────────────────────────────
-const WINNING_SCORE      := 5
-const BALL_SPEED_START   := 300.0
-const BALL_SPEED_STEP    := 20.0
-const BALL_SPEED_MAX     := 700.0
-const PADDLE_SPEED       := 400.0
-const W                  := 800.0
-const H                  := 600.0
+# ── Constants ─────────────────────────────────────────────────────────────────
+const WINNING_SCORE         := 5
+const BALL_SPEED_START      := 250.0   # px/s at kick-off
+const BALL_SPEED_ON_HIT     := 25.0    # added per paddle hit
+const BALL_SPEED_PER_SEC    := 20.0    # gradual ramp-up during a rally
+const BALL_SPEED_MAX        := 820.0
+const PADDLE_SPEED          := 400.0
+const AI_SPEED              := 310.0   # AI is slower → beatable; struggles at high ball speed
+const W                     := 800.0
+const H                     := 600.0
 
-# ── State ────────────────────────────────────────────────────────────────────
+# ── State ─────────────────────────────────────────────────────────────────────
 var left_score  := 0
 var right_score := 0
 var game_active := false
+var ai_mode     := false
 var ball_dir    := Vector2.ZERO
 var ball_speed  := BALL_SPEED_START
 
-# ── Node refs ────────────────────────────────────────────────────────────────
-var ball          : CharacterBody2D
-var left_paddle   : StaticBody2D
-var right_paddle  : StaticBody2D
-var lbl_left      : Label
-var lbl_right     : Label
-var lbl_message   : Label
+# ── Node refs ─────────────────────────────────────────────────────────────────
+var ball         : CharacterBody2D
+var left_paddle  : StaticBody2D
+var right_paddle : StaticBody2D
+var lbl_left     : Label
+var lbl_right    : Label
+var lbl_message  : Label
 
 # ─────────────────────────────────────────────────────────────────────────────
 func _ready() -> void:
 	_build_scene()
 
 func _build_scene() -> void:
-	# --- Background (lowest CanvasLayer) ---
+	# Background
 	var bg_layer := CanvasLayer.new()
 	bg_layer.layer = -10
 	add_child(bg_layer)
@@ -46,46 +49,46 @@ func _build_scene() -> void:
 	cline.color    = Color(0.3, 0.3, 0.3)
 	bg_layer.add_child(cline)
 
-	# --- Physics bodies ---
+	# Physics bodies
 	left_paddle  = _make_paddle(Vector2(30, H / 2))
 	right_paddle = _make_paddle(Vector2(W - 30, H / 2))
 	ball         = _make_ball()
 	ball.visible = false
-
 	add_child(left_paddle)
 	add_child(right_paddle)
 	add_child(ball)
 
-	# --- UI (top CanvasLayer) ---
+	# UI
 	var ui := CanvasLayer.new()
 	ui.layer = 10
 	add_child(ui)
 
-	lbl_left    = _make_label("0",                     Vector2(200, 20), 48)
-	lbl_right   = _make_label("0",                     Vector2(530, 20), 48)
-	lbl_message = _make_label("Press SPACE to Start",  Vector2(0, 260),  32)
-	lbl_message.size                  = Vector2(W, 80)
-	lbl_message.horizontal_alignment  = HORIZONTAL_ALIGNMENT_CENTER
+	lbl_left    = _make_label("0", Vector2(200, 20), 48)
+	lbl_right   = _make_label("0", Vector2(530, 20), 48)
+	lbl_message = _make_label("", Vector2(0, 220), 30)
+	lbl_message.size                 = Vector2(W, 160)
+	lbl_message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl_message.autowrap_mode        = TextServer.AUTOWRAP_WORD
 
 	ui.add_child(lbl_left)
 	ui.add_child(lbl_right)
 	ui.add_child(lbl_message)
 
-# ─────────────────────────────────────────────────────────────────────────────
+	_show_title()
+
+# ── Builders ──────────────────────────────────────────────────────────────────
 func _make_paddle(pos: Vector2) -> StaticBody2D:
 	var p   := StaticBody2D.new()
 	p.position = pos
-
 	var col   := CollisionShape2D.new()
 	var shape := RectangleShape2D.new()
 	shape.size = Vector2(16, 80)
 	col.shape  = shape
 	p.add_child(col)
-
 	var vis := Polygon2D.new()
 	vis.polygon = PackedVector2Array([
 		Vector2(-8, -40), Vector2(8, -40),
-		Vector2(8,  40),  Vector2(-8,  40)
+		Vector2(8,   40), Vector2(-8,  40)
 	])
 	vis.color = Color.WHITE
 	p.add_child(vis)
@@ -94,13 +97,11 @@ func _make_paddle(pos: Vector2) -> StaticBody2D:
 func _make_ball() -> CharacterBody2D:
 	var b   := CharacterBody2D.new()
 	b.position = Vector2(W / 2, H / 2)
-
 	var col   := CollisionShape2D.new()
 	var shape := RectangleShape2D.new()
 	shape.size = Vector2(16, 16)
 	col.shape  = shape
 	b.add_child(col)
-
 	var vis := Polygon2D.new()
 	vis.polygon = PackedVector2Array([
 		Vector2(-8, -8), Vector2(8, -8),
@@ -117,29 +118,78 @@ func _make_label(txt: String, pos: Vector2, font_size: int) -> Label:
 	lbl.add_theme_font_size_override("font_size", font_size)
 	return lbl
 
-# ─────────────────────────────────────────────────────────────────────────────
-func _process(_delta: float) -> void:
-	if Input.is_action_just_pressed("ui_accept") and not game_active:
-		_start_game()
+# ── Input ─────────────────────────────────────────────────────────────────────
+func _input(event: InputEvent) -> void:
+	if not (event is InputEventKey and event.pressed and not event.echo):
+		return
+	if game_active:
+		return
+	match event.physical_keycode:
+		KEY_1:
+			ai_mode = true
+			_start_game()
+		KEY_2:
+			ai_mode = false
+			_start_game()
 
+# ── Game loop ─────────────────────────────────────────────────────────────────
 func _physics_process(delta: float) -> void:
 	if not game_active:
 		return
-	# Left paddle: W / S  — StaticBody2D moves via direct position assignment
+
+	# Left paddle — always human (W / S)
 	var dir1 := 0
 	if Input.is_key_pressed(KEY_W): dir1 -= 1
 	if Input.is_key_pressed(KEY_S): dir1 += 1
-	left_paddle.position.y = clamp(left_paddle.position.y + dir1 * PADDLE_SPEED * delta, 50.0, H - 50.0)
+	left_paddle.position.y = clamp(
+		left_paddle.position.y + dir1 * PADDLE_SPEED * delta, 50.0, H - 50.0)
 
-	# Right paddle: Up / Down arrows
-	var dir2 := 0
-	if Input.is_key_pressed(KEY_UP):   dir2 -= 1
-	if Input.is_key_pressed(KEY_DOWN): dir2 += 1
-	right_paddle.position.y = clamp(right_paddle.position.y + dir2 * PADDLE_SPEED * delta, 50.0, H - 50.0)
+	# Right paddle — human or AI
+	if ai_mode:
+		_tick_ai(delta)
+	else:
+		var dir2 := 0
+		if Input.is_key_pressed(KEY_UP):   dir2 -= 1
+		if Input.is_key_pressed(KEY_DOWN): dir2 += 1
+		right_paddle.position.y = clamp(
+			right_paddle.position.y + dir2 * PADDLE_SPEED * delta, 50.0, H - 50.0)
 
-	_move_ball(delta)
+	_tick_ball(delta)
 
-# ─────────────────────────────────────────────────────────────────────────────
+func _tick_ai(delta: float) -> void:
+	# Track ball when it's heading our way; drift to centre otherwise
+	var target_y := H / 2.0
+	if ball_dir.x > 0.0:
+		target_y = ball.position.y
+	var diff := target_y - right_paddle.position.y
+	var move := clampf(diff, -AI_SPEED * delta, AI_SPEED * delta)
+	right_paddle.position.y = clamp(right_paddle.position.y + move, 50.0, H - 50.0)
+
+func _tick_ball(delta: float) -> void:
+	# Gradual ramp-up every frame (in addition to per-hit boost)
+	ball_speed = minf(ball_speed + BALL_SPEED_PER_SEC * delta, BALL_SPEED_MAX)
+
+	var col := ball.move_and_collide(ball_dir * ball_speed * delta)
+	if col:
+		ball_dir   = ball_dir.bounce(col.get_normal())
+		ball_speed = minf(ball_speed + BALL_SPEED_ON_HIT, BALL_SPEED_MAX)
+
+	# Top / bottom walls
+	if ball.position.y < 10.0:
+		ball.position.y = 10.0
+		ball_dir.y      = absf(ball_dir.y)
+	elif ball.position.y > H - 10.0:
+		ball.position.y = H - 10.0
+		ball_dir.y      = -absf(ball_dir.y)
+
+	# Scoring
+	if   ball.position.x < -20.0:    _score("left")
+	elif ball.position.x > W + 20.0: _score("right")
+
+# ── Game state ────────────────────────────────────────────────────────────────
+func _show_title() -> void:
+	lbl_message.text = "PONG\n\nPress  1  to play vs Computer\nPress  2  to play vs a Friend"
+
 func _start_game() -> void:
 	left_score  = 0
 	right_score = 0
@@ -156,22 +206,6 @@ func _reset_ball() -> void:
 	if randi() % 2 == 0:
 		angle += PI
 	ball_dir = Vector2(cos(angle), sin(angle))
-
-func _move_ball(delta: float) -> void:
-	var col := ball.move_and_collide(ball_dir * ball_speed * delta)
-	if col:
-		ball_dir   = ball_dir.bounce(col.get_normal())
-		ball_speed = minf(ball_speed + BALL_SPEED_STEP, BALL_SPEED_MAX)
-
-	if ball.position.y < 10.0:
-		ball.position.y = 10.0
-		ball_dir.y      = absf(ball_dir.y)
-	elif ball.position.y > H - 10.0:
-		ball.position.y = H - 10.0
-		ball_dir.y      = -absf(ball_dir.y)
-
-	if   ball.position.x < -20.0:   _score("left")
-	elif ball.position.x > W + 20.0: _score("right")
 
 func _score(side: String) -> void:
 	if not game_active:
@@ -191,5 +225,5 @@ func _update_scores() -> void:
 func _end_game() -> void:
 	game_active  = false
 	ball.visible = false
-	var winner   := "Left" if left_score >= WINNING_SCORE else "Right"
-	lbl_message.text = winner + " Player Wins!  Press SPACE to Restart"
+	var winner := "Left" if left_score >= WINNING_SCORE else "Right"
+	lbl_message.text = winner + " wins!\n\nPress  1  to play vs Computer\nPress  2  to play vs a Friend"
