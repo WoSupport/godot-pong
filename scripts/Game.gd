@@ -3,8 +3,7 @@ extends Node
 # ── Constants ─────────────────────────────────────────────────────────────────
 const WINNING_SCORE      := 5
 const BALL_SPEED_START   := 250.0
-const BALL_SPEED_ON_HIT  := 25.0
-const BALL_SPEED_PER_SEC := 20.0
+const BALL_SPEED_ON_HIT  := 30.0    # added per clean face hit
 const MAX_BOUNCE_ANGLE   := 75.0    # degrees — edge hit sends ball steepest
 const PADDLE_SPEED       := 400.0   # AI uses the same speed as the player
 const W                  := 800.0
@@ -21,8 +20,9 @@ var right_score := 0
 var game_active := false
 var ai_left     := false
 var ai_right    := false
-var ball_dir    := Vector2.ZERO
-var ball_speed  := BALL_SPEED_START
+var ball_dir       := Vector2.ZERO
+var ball_speed     := BALL_SPEED_START
+var time_since_hit := 1.0   # starts high so the very first hit always counts
 
 # ── Node refs ─────────────────────────────────────────────────────────────────
 var ball         : CharacterBody2D
@@ -207,16 +207,30 @@ func _predict_ball_y(target_x: float) -> float:
 
 # ── Ball ──────────────────────────────────────────────────────────────────────
 func _tick_ball(delta: float) -> void:
-	ball_speed += BALL_SPEED_PER_SEC * delta
+	time_since_hit += delta
 
 	var col := ball.move_and_collide(ball_dir * ball_speed * delta)
 	if col:
-		var hit_pos := clampf(
-			(ball.position.y - col.get_collider().position.y) / 40.0, -1.0, 1.0)
-		var angle  := hit_pos * deg_to_rad(MAX_BOUNCE_ANGLE)
-		var out_x  := 1.0 if col.get_collider() == left_paddle else -1.0
-		ball_dir    = Vector2(cos(angle) * out_x, sin(angle))
-		ball_speed += BALL_SPEED_ON_HIT
+		var collider := col.get_collider()
+		var normal   := col.get_normal()
+
+		# A face hit has a mostly-horizontal normal (ball hit the front of the paddle).
+		# An edge hit has a mostly-vertical normal (ball clipped the top/bottom sliver).
+		var face_hit := absf(normal.x) > 0.5
+
+		if face_hit:
+			# Deflect based on where on the face the ball made contact
+			var hit_pos := clampf((ball.position.y - collider.position.y) / 40.0, -1.0, 1.0)
+			var angle   := hit_pos * deg_to_rad(MAX_BOUNCE_ANGLE)
+			var out_x   := 1.0 if collider == left_paddle else -1.0
+			ball_dir     = Vector2(cos(angle) * out_x, sin(angle))
+			# Speed boost only on a clean face hit, with cooldown to prevent stacking
+			if time_since_hit > 0.15:
+				ball_speed    += BALL_SPEED_ON_HIT
+				time_since_hit = 0.0
+		else:
+			# Edge clip — reflect naturally, no speed change
+			ball_dir = ball_dir.bounce(normal)
 
 	if ball.position.y < WALL_TOP:
 		ball.position.y = WALL_TOP
@@ -242,9 +256,10 @@ func _start_game() -> void:
 	_reset_ball()
 
 func _reset_ball() -> void:
-	ball.position = Vector2(W / 2, H / 2)
-	ball_speed    = BALL_SPEED_START
-	var angle     := randf_range(-PI / 4.0, PI / 4.0)
+	ball.position  = Vector2(W / 2, H / 2)
+	ball_speed     = BALL_SPEED_START
+	time_since_hit = 1.0
+	var angle      := randf_range(-PI / 4.0, PI / 4.0)
 	if randi() % 2 == 0:
 		angle += PI
 	ball_dir = Vector2(cos(angle), sin(angle))
