@@ -5,7 +5,7 @@ const WINNING_SCORE         := 5
 const BALL_SPEED_START      := 250.0   # px/s at kick-off
 const BALL_SPEED_ON_HIT     := 25.0    # added per paddle hit
 const BALL_SPEED_PER_SEC    := 20.0    # gradual ramp-up during a rally
-const BALL_SPEED_MAX        := 820.0
+const MAX_BOUNCE_ANGLE      := 75.0    # degrees — hitting the paddle edge sends the ball steep
 const PADDLE_SPEED          := 400.0
 const AI_SPEED              := 310.0   # AI is slower → beatable; struggles at high ball speed
 const W                     := 800.0
@@ -166,13 +166,20 @@ func _tick_ai(delta: float) -> void:
 	right_paddle.position.y = clamp(right_paddle.position.y + move, 50.0, H - 50.0)
 
 func _tick_ball(delta: float) -> void:
-	# Gradual ramp-up every frame (in addition to per-hit boost)
-	ball_speed = minf(ball_speed + BALL_SPEED_PER_SEC * delta, BALL_SPEED_MAX)
+	# Uncapped ramp-up — ball gets faster until nobody can return it
+	ball_speed += BALL_SPEED_PER_SEC * delta
 
 	var col := ball.move_and_collide(ball_dir * ball_speed * delta)
 	if col:
-		ball_dir   = ball_dir.bounce(col.get_normal())
-		ball_speed = minf(ball_speed + BALL_SPEED_ON_HIT, BALL_SPEED_MAX)
+		# Where on the paddle did the ball hit? -1 = top edge, 0 = centre, +1 = bottom edge
+		var hit_pos := clampf(
+			(ball.position.y - col.get_collider().position.y) / 40.0, -1.0, 1.0)
+		# Map hit position to outgoing angle (steeper toward edges)
+		var angle  := hit_pos * deg_to_rad(MAX_BOUNCE_ANGLE)
+		# Always bounce away from the paddle that was hit
+		var out_x  := 1.0 if col.get_collider() == left_paddle else -1.0
+		ball_dir    = Vector2(cos(angle) * out_x, sin(angle))   # already unit-length
+		ball_speed += BALL_SPEED_ON_HIT
 
 	# Top / bottom walls
 	if ball.position.y < 10.0:
