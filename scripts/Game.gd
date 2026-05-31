@@ -214,29 +214,37 @@ func _tick_ball(delta: float) -> void:
 		var collider := col.get_collider()
 		var normal   := col.get_normal()
 
-		# A face hit has a mostly-horizontal normal (ball hit the front of the paddle).
-		# An edge hit has a mostly-vertical normal (ball clipped the top/bottom sliver).
-		var face_hit := absf(normal.x) > 0.5
-
-		if face_hit:
-			# Deflect based on where on the face the ball made contact
+		# face hit  → normal is mostly horizontal (ball hit the front of the paddle)
+		# edge clip → normal is mostly vertical   (ball caught the top/bottom sliver)
+		if absf(normal.x) > 0.5:
+			# ── Face hit: apply directional deflection ──────────────────────────
 			var hit_pos := clampf((ball.position.y - collider.position.y) / 40.0, -1.0, 1.0)
 			var angle   := hit_pos * deg_to_rad(MAX_BOUNCE_ANGLE)
 			var out_x   := 1.0 if collider == left_paddle else -1.0
 			ball_dir     = Vector2(cos(angle) * out_x, sin(angle))
-			# Speed boost only on a clean face hit, with cooldown to prevent stacking
 			if time_since_hit > 0.15:
 				ball_speed    += BALL_SPEED_ON_HIT
 				time_since_hit = 0.0
 		else:
-			# Edge clip — reflect naturally, no speed change
-			ball_dir = ball_dir.bounce(normal)
+			# ── Edge clip: reflect and physically push ball away from the edge ──
+			# Without the push the ball can get wedged between the paddle edge
+			# and the arena wall, oscillating forever with zero net movement.
+			ball_dir       = ball_dir.bounce(normal)
+			ball.position += normal * 4.0
 
+		# After any collision guarantee enough vertical movement so the ball
+		# can never settle into a near-horizontal trajectory that gets trapped.
+		if absf(ball_dir.y) < 0.15:
+			ball_dir.y = 0.15 * signf(ball_dir.y) if ball_dir.y != 0.0 else 0.15
+			ball_dir   = ball_dir.normalized()
+
+	# Wall bounds — keep 1 px inside so position never sits exactly on the boundary,
+	# which would create the double-constraint trap in the first place.
 	if ball.position.y < WALL_TOP:
-		ball.position.y = WALL_TOP
+		ball.position.y = WALL_TOP + 1.0
 		ball_dir.y      = absf(ball_dir.y)
 	elif ball.position.y > WALL_BOT:
-		ball.position.y = WALL_BOT
+		ball.position.y = WALL_BOT - 1.0
 		ball_dir.y      = -absf(ball_dir.y)
 
 	if   ball.position.x < -20.0:    _score("left")
