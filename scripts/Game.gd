@@ -173,16 +173,33 @@ func _tick_ai(paddle: StaticBody2D, opponent: StaticBody2D, ball_toward_positive
 	var target_y: float
 	if approaching:
 		var landing_y := _predict_ball_y(paddle.position.x)
+		# out_x: horizontal direction the ball will travel after the AI hits it
+		var out_x := -1.0 if ball_toward_positive_x else 1.0
 
-		# Strategic offset: aim ball away from where the opponent is.
-		# Scale by how steep the ball angle is — near-parallel balls (small
-		# |ball_dir.y / ball_dir.x|) get almost no offset so the ball lands
-		# safely on the paddle face instead of clipping the edge.
-		var steepness  := clampf(absf(ball_dir.y / ball_dir.x), 0.0, 1.0)
-		var opp_bias   := (opponent.position.y - H / 2.0) / (H / 2.0)   # -1…+1
-		# Max offset 28 px (70 % of paddle half-height) keeps hit_pos < 0.7,
-		# well clear of the edge even with small prediction errors.
-		target_y = landing_y - opp_bias * 28.0 * steepness
+		# Steepness limits how far off-centre we dare position the paddle.
+		# Near-parallel incoming balls get a small range so we always hit the face.
+		var steepness := clampf(absf(ball_dir.y / ball_dir.x), 0.0, 1.0)
+		var max_hp    := steepness * 0.75   # hit_pos range [-max_hp, +max_hp]
+
+		# Search over possible hit positions (which set the outgoing angle) and
+		# choose the one whose return lands furthest from the player's paddle.
+		var best_hp    := 0.0
+		var best_dist  := -1.0
+		var steps      := 10
+		for i in range(steps + 1):
+			var hp     := lerpf(-max_hp, max_hp, float(i) / steps)
+			var angle  := hp * deg_to_rad(MAX_BOUNCE_ANGLE)
+			var out_dir := Vector2(cos(angle) * out_x, sin(angle))
+			var player_land := _predict_landing_y(
+				paddle.position.x, landing_y, out_dir, opponent.position.x)
+			var dist := absf(player_land - opponent.position.y)
+			if dist > best_dist:
+				best_dist = dist
+				best_hp   = hp
+
+		# Position paddle so the ball strikes at best_hp:
+		#   hit_pos = (ball.y − paddle.y) / 40  →  paddle.y = ball.y − hit_pos * 40
+		target_y = landing_y - best_hp * 40.0
 	else:
 		target_y = H / 2.0   # ball moving away — drift to centre
 
@@ -211,21 +228,27 @@ func _update_markers() -> void:
 		marker_right.visible = false
 
 # ── Ball prediction ───────────────────────────────────────────────────────────
+
+# Where will the live ball land at target_x?
 func _predict_ball_y(target_x: float) -> float:
 	if absf(ball_dir.x) < 0.01:
 		return ball.position.y
 	if signf(target_x - ball.position.x) != signf(ball_dir.x):
 		return H / 2.0
+	return _predict_landing_y(ball.position.x, ball.position.y, ball_dir, target_x)
 
-	var dy := (ball_dir.y / ball_dir.x) * (target_x - ball.position.x)
-
-	var y := ball.position.y + dy - WALL_TOP
+# General form: where does a ball starting at (from_x, from_y) travelling in
+# dir land at target_x, accounting for top/bottom wall bounces?
+func _predict_landing_y(from_x: float, from_y: float, dir: Vector2, target_x: float) -> float:
+	if absf(dir.x) < 0.01:
+		return from_y
+	var dy := (dir.y / dir.x) * (target_x - from_x)
+	var y  := from_y + dy - WALL_TOP
 	if y < 0.0:
 		y = -y
 	y = fmod(y, FIELD_H * 2.0)
 	if y > FIELD_H:
 		y = FIELD_H * 2.0 - y
-
 	return clampf(y + WALL_TOP, WALL_TOP, WALL_BOT)
 
 # ── Ball ──────────────────────────────────────────────────────────────────────
