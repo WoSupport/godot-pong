@@ -1,0 +1,12 @@
+# Godot-specific
+.godot/
+*.import
+*.translation
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Export/build artifacts
+export/
+builds/
