@@ -173,32 +173,34 @@ func _tick_ai(paddle: StaticBody2D, opponent: StaticBody2D, ball_toward_positive
 	var target_y: float
 	if approaching:
 		var landing_y := _predict_ball_y(paddle.position.x)
-		# out_x: horizontal direction the ball will travel after the AI hits it
-		var out_x := -1.0 if ball_toward_positive_x else 1.0
+		var out_x     := -1.0 if ball_toward_positive_x else 1.0
 
-		# Steepness limits how far off-centre we dare position the paddle.
-		# Near-parallel incoming balls get a small range so we always hit the face.
-		var steepness := clampf(absf(ball_dir.y / ball_dir.x), 0.0, 1.0)
-		var max_hp    := steepness * 0.75   # hit_pos range [-max_hp, +max_hp]
+		# Ideal landing: mirror the player's position, amplified so even a
+		# centred player gets the ball aimed toward a corner.
+		# spread=2 means a player 100px above centre → ideal landing 200px below centre.
+		# As the player moves, ideal_land shifts continuously → visible micro-adjustments.
+		var ideal_land := clampf(
+			H / 2.0 - (opponent.position.y - H / 2.0) * 2.0,
+			WALL_TOP + 40.0, WALL_BOT - 40.0)
 
-		# Search over possible hit positions (which set the outgoing angle) and
-		# choose the one whose return lands furthest from the player's paddle.
-		var best_hp    := 0.0
-		var best_dist  := -1.0
-		var steps      := 10
-		for i in range(steps + 1):
-			var hp     := lerpf(-max_hp, max_hp, float(i) / steps)
-			var angle  := hp * deg_to_rad(MAX_BOUNCE_ANGLE)
+		# Find the hit position (hp) whose predicted return lands closest to ideal_land.
+		# hp ∈ [-0.75, +0.75] → paddle offset ≤ 30px < 40px half-height → always face hit.
+		# 20 steps gives fine enough resolution for smooth paddle micro-adjustments.
+		var best_hp   := 0.0
+		var best_diff := 1e9
+		for i in range(21):
+			var hp      := lerpf(-0.75, 0.75, float(i) / 20.0)
+			var angle   := hp * deg_to_rad(MAX_BOUNCE_ANGLE)
 			var out_dir := Vector2(cos(angle) * out_x, sin(angle))
-			var player_land := _predict_landing_y(
+			var pl_land := _predict_landing_y(
 				paddle.position.x, landing_y, out_dir, opponent.position.x)
-			var dist := absf(player_land - opponent.position.y)
-			if dist > best_dist:
-				best_dist = dist
+			var diff    := absf(pl_land - ideal_land)
+			if diff < best_diff:
+				best_diff = diff
 				best_hp   = hp
 
-		# Position paddle so the ball strikes at best_hp:
-		#   hit_pos = (ball.y − paddle.y) / 40  →  paddle.y = ball.y − hit_pos * 40
+		# Place paddle so ball contacts at best_hp:
+		#   hit_pos = (ball.y − paddle.y) / 40  →  paddle.y = ball.y − hp * 40
 		target_y = landing_y - best_hp * 40.0
 	else:
 		target_y = H / 2.0   # ball moving away — drift to centre
