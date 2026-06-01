@@ -8,12 +8,12 @@ const MAX_BOUNCE_ANGLE   := 75.0
 const PADDLE_SPEED       := 400.0
 const W                  := 800.0
 const H                  := 600.0
+const WALL_TOP           := 10.0
+const WALL_BOT           := H - 10.0
+const FIELD_H            := WALL_BOT - WALL_TOP
+const TRAIL_LEN          := 10     # number of ghost positions behind the ball
 
-const WALL_TOP := 10.0
-const WALL_BOT := H - 10.0
-const FIELD_H  := WALL_BOT - WALL_TOP   # 580.0
-
-# ── State ─────────────────────────────────────────────────────────────────────
+# ── Game state ────────────────────────────────────────────────────────────────
 var left_score     := 0
 var right_score    := 0
 var game_active    := false
@@ -23,21 +23,36 @@ var ball_dir       := Vector2.ZERO
 var ball_speed     := BALL_SPEED_START
 var time_since_hit := 1.0
 
+# ── Visual state ──────────────────────────────────────────────────────────────
+var left_flash_t    := 0.0    # how long since last left-paddle hit  (counts down)
+var right_flash_t   := 0.0    # how long since last right-paddle hit (counts down)
+var wall_flash_t    := 0.0    # wall-bounce flash                    (counts down)
+var lbl_left_pulse  := 0.0    # score-label pulse timer              (counts down)
+var lbl_right_pulse := 0.0
+var trail_pos       : Array = []   # ring of recent ball positions
+
 # ── Node refs ─────────────────────────────────────────────────────────────────
-var ball          : CharacterBody2D
-var left_paddle   : StaticBody2D
-var right_paddle  : StaticBody2D
-var lbl_left      : Label
-var lbl_right     : Label
-var lbl_message   : Label
-var marker_left   : Polygon2D   # yellow — prediction at left paddle
-var marker_right  : Polygon2D   # cyan   — prediction at right paddle
+var ball               : CharacterBody2D
+var left_paddle        : StaticBody2D
+var right_paddle       : StaticBody2D
+var ball_vis           : Polygon2D
+var left_vis           : Polygon2D
+var right_vis          : Polygon2D
+var wall_top_flash     : ColorRect
+var wall_bot_flash     : ColorRect
+var trail_nodes        : Array[Polygon2D] = []
+var marker_left        : Polygon2D
+var marker_right       : Polygon2D
+var lbl_left           : Label
+var lbl_right          : Label
+var lbl_message        : Label
 
 # ─────────────────────────────────────────────────────────────────────────────
 func _ready() -> void:
 	_build_scene()
 
 func _build_scene() -> void:
+	# ── Background ───────────────────────────────────────────────────────────
 	var bg_layer := CanvasLayer.new()
 	bg_layer.layer = -10
 	add_child(bg_layer)
@@ -51,9 +66,23 @@ func _build_scene() -> void:
 	var cline := ColorRect.new()
 	cline.position = Vector2(396, 0)
 	cline.size     = Vector2(8, H)
-	cline.color    = Color(0.3, 0.3, 0.3)
+	cline.color    = Color(0.2, 0.2, 0.2)
 	bg_layer.add_child(cline)
 
+	# Thin wall strips that flash on bounce
+	wall_top_flash = ColorRect.new()
+	wall_top_flash.position = Vector2(0, 0)
+	wall_top_flash.size     = Vector2(W, WALL_TOP)
+	wall_top_flash.color    = Color(0.05, 0.05, 0.05)
+	bg_layer.add_child(wall_top_flash)
+
+	wall_bot_flash = ColorRect.new()
+	wall_bot_flash.position = Vector2(0, WALL_BOT)
+	wall_bot_flash.size     = Vector2(W, H - WALL_BOT)
+	wall_bot_flash.color    = Color(0.05, 0.05, 0.05)
+	bg_layer.add_child(wall_bot_flash)
+
+	# ── Physics bodies ────────────────────────────────────────────────────────
 	left_paddle  = _make_paddle(Vector2(30, H / 2))
 	right_paddle = _make_paddle(Vector2(W - 30, H / 2))
 	ball         = _make_ball()
@@ -62,6 +91,23 @@ func _build_scene() -> void:
 	add_child(right_paddle)
 	add_child(ball)
 
+	# Store references to the visual Polygon2D children (index 1 — after CollisionShape2D)
+	left_vis  = left_paddle.get_child(1)  as Polygon2D
+	right_vis = right_paddle.get_child(1) as Polygon2D
+	ball_vis  = ball.get_child(1)         as Polygon2D
+
+	# ── Ball trail ────────────────────────────────────────────────────────────
+	for i in range(TRAIL_LEN):
+		var t := Polygon2D.new()
+		t.polygon = PackedVector2Array([
+			Vector2(0, -5), Vector2(5, 0), Vector2(0, 5), Vector2(-5, 0)
+		])
+		t.color   = Color.WHITE
+		t.visible = false
+		add_child(t)
+		trail_nodes.append(t)
+
+	# ── UI ────────────────────────────────────────────────────────────────────
 	var ui := CanvasLayer.new()
 	ui.layer = 10
 	add_child(ui)
@@ -76,9 +122,9 @@ func _build_scene() -> void:
 	ui.add_child(lbl_right)
 	ui.add_child(lbl_message)
 
-	# Prediction markers — diamonds drawn in world space
-	marker_left  = _make_marker(Color(1.0, 0.85, 0.0, 0.85))   # gold/yellow
-	marker_right = _make_marker(Color(0.0, 1.0,  1.0, 0.85))   # cyan
+	# Prediction markers
+	marker_left  = _make_marker(Color(1.0, 0.85, 0.0, 0.85))
+	marker_right = _make_marker(Color(0.0, 1.0,  1.0, 0.85))
 	add_child(marker_left)
 	add_child(marker_right)
 
@@ -165,6 +211,7 @@ func _physics_process(delta: float) -> void:
 
 	_tick_ball(delta)
 	_update_markers()
+	_update_visuals(delta)
 
 # ── AI ────────────────────────────────────────────────────────────────────────
 func _tick_ai(paddle: StaticBody2D, opponent: StaticBody2D, ball_toward_positive_x: bool, delta: float) -> void:
@@ -175,21 +222,19 @@ func _tick_ai(paddle: StaticBody2D, opponent: StaticBody2D, ball_toward_positive
 		var landing_y := _predict_ball_y(paddle.position.x)
 		var out_x     := -1.0 if ball_toward_positive_x else 1.0
 
-		# Ideal landing: mirror the player's position, amplified so even a
-		# centred player gets the ball aimed toward a corner.
-		# spread=2 means a player 100px above centre → ideal landing 200px below centre.
-		# As the player moves, ideal_land shifts continuously → visible micro-adjustments.
+		# Target landing: mirror the player's position, amplified so the AI
+		# always drives the ball toward a corner. Small random noise stops it
+		# being perfectly predictable.
 		var ideal_land := clampf(
-			H / 2.0 - (opponent.position.y - H / 2.0) * 2.0,
+			H / 2.0 - (opponent.position.y - H / 2.0) * 2.0 + randf_range(-18.0, 18.0),
 			WALL_TOP + 40.0, WALL_BOT - 40.0)
 
-		# Find the hit position (hp) whose predicted return lands closest to ideal_land.
-		# hp ∈ [-0.75, +0.75] → paddle offset ≤ 30px < 40px half-height → always face hit.
-		# 20 steps gives fine enough resolution for smooth paddle micro-adjustments.
+		# Search 41 candidate hit positions; pick the one whose return lands
+		# closest to ideal_land. hp ≤ 0.75 → offset ≤ 30px < face half-height.
 		var best_hp   := 0.0
 		var best_diff := 1e9
-		for i in range(21):
-			var hp      := lerpf(-0.75, 0.75, float(i) / 20.0)
+		for i in range(41):
+			var hp      := lerpf(-0.75, 0.75, float(i) / 40.0)
 			var angle   := hp * deg_to_rad(MAX_BOUNCE_ANGLE)
 			var out_dir := Vector2(cos(angle) * out_x, sin(angle))
 			var pl_land := _predict_landing_y(
@@ -199,11 +244,9 @@ func _tick_ai(paddle: StaticBody2D, opponent: StaticBody2D, ball_toward_positive
 				best_diff = diff
 				best_hp   = hp
 
-		# Place paddle so ball contacts at best_hp:
-		#   hit_pos = (ball.y − paddle.y) / 40  →  paddle.y = ball.y − hp * 40
 		target_y = landing_y - best_hp * 40.0
 	else:
-		target_y = H / 2.0   # ball moving away — drift to centre
+		target_y = H / 2.0
 
 	target_y = clampf(target_y, 50.0, H - 50.0)
 	var move  := clampf(target_y - paddle.position.y, -PADDLE_SPEED * delta, PADDLE_SPEED * delta)
@@ -211,16 +254,12 @@ func _tick_ai(paddle: StaticBody2D, opponent: StaticBody2D, ball_toward_positive
 
 # ── Prediction markers ────────────────────────────────────────────────────────
 func _update_markers() -> void:
-	# Show the marker on whichever side the ball is heading toward.
-	# Both markers are always computed; only the relevant one is visible.
 	if ball_dir.x > 0.0:
-		# Ball heading right → right-paddle marker visible
 		marker_right.visible    = true
 		marker_right.position.x = right_paddle.position.x
 		marker_right.position.y = _predict_ball_y(right_paddle.position.x)
 		marker_left.visible     = false
 	elif ball_dir.x < 0.0:
-		# Ball heading left → left-paddle marker visible
 		marker_left.visible    = true
 		marker_left.position.x = left_paddle.position.x
 		marker_left.position.y = _predict_ball_y(left_paddle.position.x)
@@ -229,9 +268,61 @@ func _update_markers() -> void:
 		marker_left.visible  = false
 		marker_right.visible = false
 
-# ── Ball prediction ───────────────────────────────────────────────────────────
+# ── Visual juice ──────────────────────────────────────────────────────────────
+func _ball_speed_color() -> Color:
+	# White (slow) → yellow → orange → red (fast)
+	var t := clampf((ball_speed - BALL_SPEED_START) / 500.0, 0.0, 1.0)
+	if t < 0.5:
+		return Color(1.0, 1.0, lerpf(1.0, 0.0, t * 2.0))   # white → yellow
+	else:
+		return Color(1.0, lerpf(1.0, 0.0, (t - 0.5) * 2.0), 0.0)  # yellow → red
 
-# Where will the live ball land at target_x?
+func _update_visuals(delta: float) -> void:
+	# ── Timers ────────────────────────────────────────────────────────────────
+	left_flash_t    = maxf(left_flash_t    - delta, 0.0)
+	right_flash_t   = maxf(right_flash_t   - delta, 0.0)
+	wall_flash_t    = maxf(wall_flash_t    - delta, 0.0)
+	lbl_left_pulse  = maxf(lbl_left_pulse  - delta, 0.0)
+	lbl_right_pulse = maxf(lbl_right_pulse - delta, 0.0)
+
+	# ── Ball colour by speed ──────────────────────────────────────────────────
+	var bc := _ball_speed_color()
+	ball_vis.color = bc
+
+	# ── Ball trail ────────────────────────────────────────────────────────────
+	trail_pos.push_front(ball.position)
+	if trail_pos.size() > TRAIL_LEN:
+		trail_pos.pop_back()
+
+	for i in range(TRAIL_LEN):
+		var node := trail_nodes[i]
+		if i < trail_pos.size():
+			node.visible  = game_active
+			node.position = trail_pos[i]
+			var age_t     := float(i + 1) / TRAIL_LEN          # 0=newest, 1=oldest
+			node.color     = Color(bc.r, bc.g, bc.b, (1.0 - age_t) * 0.45)
+		else:
+			node.visible = false
+
+	# ── Paddle flash (cyan burst → white) ─────────────────────────────────────
+	const FLASH_DUR := 0.18
+	left_vis.color  = Color.WHITE.lerp(Color(0.2, 1.0, 1.0), left_flash_t  / FLASH_DUR)
+	right_vis.color = Color.WHITE.lerp(Color(0.2, 1.0, 1.0), right_flash_t / FLASH_DUR)
+
+	# ── Wall flash (dim grey → bright on bounce) ──────────────────────────────
+	const WALL_DUR := 0.10
+	var wc := Color(0.05, 0.05, 0.05).lerp(Color(0.7, 0.85, 1.0), wall_flash_t / WALL_DUR)
+	wall_top_flash.color = wc
+	wall_bot_flash.color = wc
+
+	# ── Score label pulse (white → gold on score) ─────────────────────────────
+	const PULSE_DUR := 0.40
+	lbl_left.add_theme_color_override("font_color",
+		Color.WHITE.lerp(Color(1.0, 0.85, 0.0), lbl_left_pulse  / PULSE_DUR))
+	lbl_right.add_theme_color_override("font_color",
+		Color.WHITE.lerp(Color(1.0, 0.85, 0.0), lbl_right_pulse / PULSE_DUR))
+
+# ── Ball prediction ───────────────────────────────────────────────────────────
 func _predict_ball_y(target_x: float) -> float:
 	if absf(ball_dir.x) < 0.01:
 		return ball.position.y
@@ -239,8 +330,6 @@ func _predict_ball_y(target_x: float) -> float:
 		return H / 2.0
 	return _predict_landing_y(ball.position.x, ball.position.y, ball_dir, target_x)
 
-# General form: where does a ball starting at (from_x, from_y) travelling in
-# dir land at target_x, accounting for top/bottom wall bounces?
 func _predict_landing_y(from_x: float, from_y: float, dir: Vector2, target_x: float) -> float:
 	if absf(dir.x) < 0.01:
 		return from_y
@@ -263,7 +352,7 @@ func _tick_ball(delta: float) -> void:
 		var normal   := col.get_normal()
 
 		if absf(normal.x) > 0.5:
-			# Face hit — directional deflection
+			# Face hit — directional deflection + speed boost + paddle flash
 			var hit_pos := clampf((ball.position.y - collider.position.y) / 40.0, -1.0, 1.0)
 			var angle   := hit_pos * deg_to_rad(MAX_BOUNCE_ANGLE)
 			var out_x   := 1.0 if collider == left_paddle else -1.0
@@ -271,8 +360,11 @@ func _tick_ball(delta: float) -> void:
 			if time_since_hit > 0.15:
 				ball_speed    += BALL_SPEED_ON_HIT
 				time_since_hit = 0.0
+			# Trigger flash on the paddle that was hit
+			if collider == left_paddle:  left_flash_t  = 0.18
+			else:                        right_flash_t = 0.18
 		else:
-			# Edge clip — reflect and push clear to prevent wedging
+			# Edge clip — reflect and push clear
 			ball_dir       = ball_dir.bounce(normal)
 			ball.position += normal * 4.0
 
@@ -280,12 +372,15 @@ func _tick_ball(delta: float) -> void:
 			ball_dir.y = 0.15 * signf(ball_dir.y) if ball_dir.y != 0.0 else 0.15
 			ball_dir   = ball_dir.normalized()
 
+	# Wall bounce — flash the strips
 	if ball.position.y < WALL_TOP:
 		ball.position.y = WALL_TOP + 1.0
 		ball_dir.y      = absf(ball_dir.y)
+		wall_flash_t    = 0.10
 	elif ball.position.y > WALL_BOT:
 		ball.position.y = WALL_BOT - 1.0
 		ball_dir.y      = -absf(ball_dir.y)
+		wall_flash_t    = 0.10
 
 	if   ball.position.x < -20.0:    _score("left")
 	elif ball.position.x > W + 20.0: _score("right")
@@ -301,15 +396,22 @@ func _start_game() -> void:
 	lbl_message.text     = ""
 	marker_left.visible  = false
 	marker_right.visible = false
-	game_active          = true
-	ball.visible         = true
+	left_flash_t         = 0.0
+	right_flash_t        = 0.0
+	wall_flash_t         = 0.0
+	lbl_left_pulse       = 0.0
+	lbl_right_pulse      = 0.0
+	trail_pos.clear()
+	game_active  = true
+	ball.visible = true
 	_reset_ball()
 
 func _reset_ball() -> void:
 	ball.position  = Vector2(W / 2, H / 2)
 	ball_speed     = BALL_SPEED_START
 	time_since_hit = 1.0
-	var angle      := randf_range(-PI / 4.0, PI / 4.0)
+	trail_pos.clear()
+	var angle := randf_range(-PI / 4.0, PI / 4.0)
 	if randi() % 2 == 0:
 		angle += PI
 	ball_dir = Vector2(cos(angle), sin(angle))
@@ -317,8 +419,12 @@ func _reset_ball() -> void:
 func _score(side: String) -> void:
 	if not game_active:
 		return
-	if side == "left": right_score += 1
-	else:              left_score  += 1
+	if side == "left":
+		right_score    += 1
+		lbl_right_pulse = 0.40
+	else:
+		left_score     += 1
+		lbl_left_pulse  = 0.40
 	_update_scores()
 	if left_score >= WINNING_SCORE or right_score >= WINNING_SCORE:
 		_end_game()
@@ -334,5 +440,7 @@ func _end_game() -> void:
 	ball.visible         = false
 	marker_left.visible  = false
 	marker_right.visible = false
+	for t in trail_nodes: t.visible = false
+	trail_pos.clear()
 	var winner := "Left" if left_score >= WINNING_SCORE else "Right"
 	lbl_message.text = winner + " wins!\n\nPress 1 — vs Computer  (you LEFT)\nPress 2 — vs Computer  (you RIGHT)\nPress 3 — 2 Players"
